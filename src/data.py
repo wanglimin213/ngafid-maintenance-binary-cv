@@ -91,6 +91,89 @@ def scale_with_paper_stats(x: np.ndarray, maxs: np.ndarray, mins: np.ndarray) ->
     return x.astype(np.float32, copy=False)
 
 
+def _as_bool(value, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _mask_fill_value(x: np.ndarray, mode: str, axis: int | None = None):
+    mode = str(mode).lower()
+    if mode == "zero":
+        return 0.0
+    if mode == "mean":
+        return np.mean(x, axis=axis, keepdims=True).astype(np.float32)
+    raise ValueError(f"Unsupported mask fill mode: {mode!r}; use 'zero' or 'mean'")
+
+
+def apply_time_series_augmentation(
+    x: np.ndarray,
+    augmentation: Optional[dict],
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Apply conservative time-series augmentation to one scaled flight sample.
+
+    All augmentations are intended for the training split only. The input x is
+    expected to be a float32 array with shape (time, channels), usually after
+    MinMax scaling.
+    """
+    if not augmentation or not _as_bool(augmentation.get("enabled", False)):
+        return x
+
+    x = x.astype(np.float32, copy=True)
+    time_steps, channels = x.shape
+
+    # 1) Time masking: mask a short continuous temporal segment across all sensors.
+    time_mask_prob = float(augmentation.get("time_mask_prob", 0.0))
+    time_mask_max_len = int(augmentation.get("time_mask_max_len", 0))
+    num_time_masks = int(augmentation.get("num_time_masks", 1))
+    time_mask_fill = augmentation.get("time_mask_fill", "zero")
+    if time_mask_prob > 0 and time_mask_max_len > 0 and time_steps > 0:
+        max_len = min(time_mask_max_len, time_steps)
+        for _ in range(max(1, num_time_masks)):
+            if rng.random() < time_mask_prob:
+                mask_len = int(rng.integers(1, max_len + 1))
+                start = int(rng.integers(0, time_steps - mask_len + 1))
+                end = start + mask_len
+                if str(time_mask_fill).lower() == "mean":
+                    fill = _mask_fill_value(x, "mean", axis=0)
+                    x[start:end, :] = fill
+                else:
+                    x[start:end, :] = 0.0
+
+    # 2) Sensor masking: mask a small number of sensor channels for the whole flight.
+    sensor_mask_prob = float(augmentation.get("sensor_mask_prob", 0.0))
+    sensor_mask_max_channels = int(augmentation.get("sensor_mask_max_channels", 0))
+    sensor_mask_fill = augmentation.get("sensor_mask_fill", "zero")
+    if sensor_mask_prob > 0 and sensor_mask_max_channels > 0 and channels > 0:
+        if rng.random() < sensor_mask_prob:
+            max_ch = min(sensor_mask_max_channels, channels)
+            n_ch = int(rng.integers(1, max_ch + 1))
+            selected = rng.choice(channels, size=n_ch, replace=False)
+            if str(sensor_mask_fill).lower() == "mean":
+                fill = _mask_fill_value(x, "mean", axis=0)
+                x[:, selected] = fill[:, selected]
+            else:
+                x[:, selected] = 0.0
+
+    # 3) Small Gaussian jitter: improve robustness to small sensor noise.
+    jitter_prob = float(augmentation.get("jitter_prob", 0.0))
+    jitter_std = float(augmentation.get("jitter_std", 0.0))
+    if jitter_prob > 0 and jitter_std > 0:
+        if rng.random() < jitter_prob:
+            noise = rng.normal(loc=0.0, scale=jitter_std, size=x.shape).astype(np.float32)
+            x = x + noise
+
+    if _as_bool(augmentation.get("clip_after_augmentation", True), default=True):
+        x = np.clip(x, 0.0, 1.0)
+
+    return x.astype(np.float32, copy=False)
+
+
 class NGAFIDBinaryDataset(Dataset):
     def __init__(
         self,
@@ -100,6 +183,8 @@ class NGAFIDBinaryDataset(Dataset):
         channels: int = 23,
         label_column: str = "before_after",
         scale_mode: str = "paper_stats",
+        augmentation: Optional[dict] = None,
+        random_seed: Optional[int] = None,
     ):
         self.bundle = bundle
         self.indices = list(indices)
@@ -107,6 +192,8 @@ class NGAFIDBinaryDataset(Dataset):
         self.channels = channels
         self.label_column = label_column
         self.scale_mode = scale_mode
+        self.augmentation = augmentation if augmentation and _as_bool(augmentation.get("enabled", False)) else None
+        self.rng = np.random.default_rng(random_seed)
 
         if label_column not in bundle.header.columns:
             raise KeyError(f"Label column {label_column!r} not found in flight_header.csv")
@@ -124,6 +211,10 @@ class NGAFIDBinaryDataset(Dataset):
             x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
         else:
             raise ValueError(f"Unknown scale_mode: {self.scale_mode}")
+
+        # Augmentation is applied only when this dataset is constructed with
+        # augmentation enabled. Validation datasets should pass augmentation=None.
+        x = apply_time_series_augmentation(x, self.augmentation, self.rng)
 
         y = float(self.bundle.header.loc[idx, self.label_column])
         # Input shape returned as (time, channels). The model will transpose to (channels, time).
