@@ -143,6 +143,18 @@ set PYTHONPATH=%CD% && python scripts/evaluate_metrics.py --config configs/binar
 
 This computes accuracy, precision, recall, F1-score, AUROC, and confusion matrices for each fold.
 
+To reproduce the threshold analysis:
+
+```bash
+python scripts/threshold_analysis.py --results-dir results_augmented
+```
+
+To search thresholds with a different target recall:
+
+```bash
+python scripts/threshold_analysis.py --results-dir results_augmented --target-recall 0.85
+```
+
 ---
 
 ## Model
@@ -325,6 +337,77 @@ The AUROC of **0.8410 ± 0.0059** indicates that the model has stable threshold-
 
 ---
 
+## Threshold Analysis
+
+The default binary classification threshold is:
+
+```text
+threshold = 0.50
+```
+
+At this threshold, the augmented model achieves the highest accuracy:
+
+| Threshold | Accuracy | Precision | Recall | F1-score | AUROC | FN | FP |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0.50 | 76.91% | 76.60% | 76.04% | 76.32% | 0.8406 | 1342 | 1301 |
+
+However, in a PHM application, the positive class is `before maintenance`, and false negatives are especially important because they represent missed pre-maintenance flights.
+
+Therefore, additional threshold analysis was performed using the saved validation predictions from all 5 folds.
+
+### Recommended PHM Operating Threshold
+
+The best F1-score is obtained at:
+
+```text
+threshold = 0.41
+```
+
+| Threshold | Accuracy | Precision | Recall | F1-score | F2-score | AUROC | FN | FP |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0.41 | 75.76% | 71.01% | 85.29% | 77.50% | 81.99% | 0.8406 | 824 | 1951 |
+
+Compared with the default threshold of 0.50, the threshold of 0.41:
+
+- improves recall from **76.04%** to **85.29%**
+- improves F1-score from **76.32%** to **77.50%**
+- reduces false negatives from **1342** to **824**
+- decreases accuracy slightly from **76.91%** to **75.76%**
+
+This operating point is more suitable for PHM-oriented maintenance detection, where missing a pre-maintenance flight may be more costly than producing additional false alarms.
+
+### Balanced Recall-Oriented Threshold
+
+A more conservative recall-oriented threshold is:
+
+```text
+threshold = 0.46
+```
+
+This threshold achieves recall above 80% while keeping accuracy close to the default threshold.
+
+| Threshold | Accuracy | Precision | Recall | F1-score | F2-score | AUROC | FN | FP |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0.46 | 76.45% | 73.84% | 80.33% | 76.95% | 78.94% | 0.8406 | 1102 | 1594 |
+
+Compared with the default threshold of 0.50, the threshold of 0.46:
+
+- improves recall from **76.04%** to **80.33%**
+- reduces false negatives from **1342** to **1102**
+- decreases accuracy only slightly from **76.91%** to **76.45%**
+
+### Threshold Summary
+
+| Operating Point | Threshold | Accuracy | Precision | Recall | F1-score | Use Case |
+|---|---:|---:|---:|---:|---:|---|
+| Accuracy-oriented | 0.50 | 76.91% | 76.60% | 76.04% | 76.32% | Default evaluation |
+| Balanced PHM | 0.46 | 76.45% | 73.84% | 80.33% | 76.95% | Better recall with small accuracy drop |
+| Recall-oriented PHM | 0.41 | 75.76% | 71.01% | 85.29% | 77.50% | Reduces missed pre-maintenance flights |
+
+The main reported model result remains the default-threshold 5-fold result. The threshold analysis provides alternative operating points for PHM applications where recall and false-negative reduction are more important than maximizing accuracy.
+
+---
+
 ## Summary of Results
 
 | Version | Main Changes | Accuracy | F1-score | AUROC |
@@ -332,6 +415,10 @@ The AUROC of **0.8410 ± 0.0059** indicates that the model has stable threshold-
 | Baseline | InceptionTime-like CNN, Adam, AvgPool | 70.39% ± 1.67% | N/A | N/A |
 | Improved | AdamW, weight decay, scheduler, early stopping, AvgPool+MaxPool | 76.59% ± 1.43% | N/A | N/A |
 | Augmented | Improved + Time Masking + Sensor Masking + Jittering | 76.91% ± 0.90% | 76.31% ± 1.13% | 0.8410 ± 0.0059 |
+| Augmented + threshold tuning | Same model, threshold adjusted to 0.41 | 75.76% | 77.50% | 0.8406 |
+
+The default threshold of 0.50 gives the highest accuracy.  
+The threshold of 0.41 gives the best F1-score and substantially improves recall for before-maintenance flights.
 
 ---
 
@@ -353,6 +440,9 @@ The improved model introduces the following changes:
 
 5. **Conservative Time-Series Data Augmentation**  
    Improves robustness by preventing the model from relying too heavily on specific time segments, sensor channels, or exact sensor values.
+
+6. **Threshold Tuning**  
+   Provides PHM-oriented operating points that reduce false negatives for before-maintenance flights.
 
 ---
 
@@ -399,7 +489,8 @@ ngafid-maintenance-binary-cv/
 ├── scripts/
 │   ├── download_data.py
 │   ├── inspect_data.py
-│   └── evaluate_metrics.py
+│   ├── evaluate_metrics.py
+│   └── threshold_analysis.py
 │
 ├── src/
 │   ├── __init__.py
@@ -460,6 +551,12 @@ To evaluate detailed metrics from saved checkpoints:
 
 ```bash
 set PYTHONPATH=%CD% && python scripts/evaluate_metrics.py --config configs/binary_inception_augmented.yaml
+```
+
+To reproduce threshold analysis:
+
+```bash
+python scripts/threshold_analysis.py --results-dir results_augmented
 ```
 
 ---
