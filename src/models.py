@@ -41,9 +41,14 @@ class InceptionModule1D(nn.Module):
 
 
 class InceptionLiteBinary(nn.Module):
-    """Paper-style InceptionTime-like 1D model for binary detection.
+    """InceptionTime-like 1D-CNN for binary maintenance detection.
 
     Input shape: (batch, time, channels). Output: logits with shape (batch,).
+
+    Pooling options:
+    - avg: global average pooling
+    - max: global max pooling
+    - avgmax: concatenate global average pooling and global max pooling
     """
     def __init__(
         self,
@@ -53,6 +58,7 @@ class InceptionLiteBinary(nn.Module):
         kernel_size: int = 41,
         bottleneck_channels: int = 32,
         dropout: float = 0.0,
+        pooling: str = "avgmax",
     ):
         super().__init__()
         modules = []
@@ -75,13 +81,22 @@ class InceptionLiteBinary(nn.Module):
             else:
                 shortcuts.append(None)
 
+        pooling = pooling.lower()
+        if pooling not in {"avg", "max", "avgmax"}:
+            raise ValueError(f"Unsupported pooling mode: {pooling}")
+
         self.modules_list = nn.ModuleList(modules)
         self.shortcuts = nn.ModuleList([s if s is not None else nn.Identity() for s in shortcuts])
         self.use_shortcut = [(d % 3 == 2) for d in range(depth)]
         self.relu = nn.ReLU(inplace=True)
-        self.pool = nn.AdaptiveAvgPool1d(1)
+
+        self.pooling = pooling
+        self.avg_pool = nn.AdaptiveAvgPool1d(1)
+        self.max_pool = nn.AdaptiveMaxPool1d(1)
+
+        fc_in = current_channels * 2 if pooling == "avgmax" else current_channels
         self.dropout = nn.Dropout(dropout) if dropout and dropout > 0 else nn.Identity()
-        self.fc = nn.Linear(current_channels, 1)
+        self.fc = nn.Linear(fc_in, 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # (batch, time, channels) -> (batch, channels, time)
@@ -93,7 +108,16 @@ class InceptionLiteBinary(nn.Module):
                 out = self.relu(out + shortcut(residual))
                 residual = out
             x = out
-        x = self.pool(x).squeeze(-1)
+
+        if self.pooling == "avg":
+            x = self.avg_pool(x).squeeze(-1)
+        elif self.pooling == "max":
+            x = self.max_pool(x).squeeze(-1)
+        else:
+            avg_x = self.avg_pool(x).squeeze(-1)
+            max_x = self.max_pool(x).squeeze(-1)
+            x = torch.cat([avg_x, max_x], dim=1)
+
         x = self.dropout(x)
         return self.fc(x).squeeze(-1)
 
@@ -109,4 +133,5 @@ def build_model(config: dict) -> nn.Module:
         kernel_size=config.get("kernel_size", 41),
         bottleneck_channels=config.get("bottleneck_channels", 32),
         dropout=config.get("dropout", 0.0),
+        pooling=config.get("pooling", "avgmax"),
     )
