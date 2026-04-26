@@ -104,19 +104,25 @@ Its accuracy is not intended to be reported as a formal result.
 
 ## Main Training
 
-Run the baseline 5-Fold Cross Validation experiment:
+Run the baseline experiment:
 
 ```bash
 python train_cv.py --config configs/binary_inception.yaml
 ```
 
-Run the improved experiment:
+Run the improved experiment without data augmentation:
 
 ```bash
 python train_cv.py --config configs/binary_inception_improved.yaml
 ```
 
-The program will report:
+Run the improved experiment with conservative data augmentation:
+
+```bash
+python train_cv.py --config configs/binary_inception_augmented.yaml
+```
+
+The program reports:
 
 ```text
 Fold 1 Accuracy
@@ -160,9 +166,11 @@ This format is required by PyTorch `Conv1d`.
 
 ---
 
-## Baseline Result
+## Experiments and Results
 
-Baseline configuration:
+### Experiment 1: Baseline
+
+Configuration:
 
 ```yaml
 device: cuda
@@ -193,9 +201,9 @@ Mean ± Std: 70.39% ± 1.67%
 
 ---
 
-## Improved Result
+### Experiment 2: Improved Model without Data Augmentation
 
-Improved configuration:
+Configuration:
 
 ```yaml
 device: cuda
@@ -230,13 +238,79 @@ Std Accuracy: 1.43%
 Mean ± Std: 76.59% ± 1.43%
 ```
 
-Compared with the baseline result, the improved model increases the mean accuracy from **70.39%** to **76.59%**, with a gain of **6.20 percentage points**.
+---
+
+### Experiment 3: Improved Model with Conservative Data Augmentation
+
+Configuration:
+
+```yaml
+device: cuda
+epochs: 150
+max_steps_per_epoch: 100
+batch_size: 24
+
+optimizer: AdamW
+weight_decay: 0.0001
+
+scheduler: ReduceLROnPlateau
+early_stopping: true
+
+pooling: global average pooling + global max pooling
+
+augmentation:
+  enabled: true
+  time_masking: true
+  sensor_masking: true
+  jittering: true
+```
+
+The data augmentation is applied only to the training folds.  
+Validation folds are not augmented.
+
+The augmentation includes:
+
+- **Time Masking**: randomly masks a short continuous temporal segment
+- **Sensor Masking**: randomly masks a small number of sensor channels
+- **Small Jittering**: adds small Gaussian noise to improve robustness
+
+5-Fold Cross Validation result:
+
+| Fold | Accuracy |
+|---|---:|
+| Fold 1 | 76.72% |
+| Fold 2 | 76.28% |
+| Fold 3 | 76.32% |
+| Fold 4 | 78.46% |
+| Fold 5 | 76.76% |
+
+Final augmented result:
+
+```text
+Mean Accuracy: 76.91%
+Std Accuracy: 0.90%
+Mean ± Std: 76.91% ± 0.90%
+```
+
+---
+
+## Summary of Results
+
+| Version | Main Changes | Accuracy |
+|---|---|---:|
+| Baseline | InceptionTime-like CNN, Adam, AvgPool | 70.39% ± 1.67% |
+| Improved | AdamW, weight decay, scheduler, early stopping, AvgPool+MaxPool | 76.59% ± 1.43% |
+| Augmented | Improved + Time Masking + Sensor Masking + Jittering | 76.91% ± 0.90% |
+
+Compared with the improved model without augmentation, conservative data augmentation slightly improves the mean accuracy from **76.59%** to **76.91%** and reduces the standard deviation from **1.43%** to **0.90%**.
+
+This suggests that the augmentation mainly improves cross-fold stability and robustness.
 
 ---
 
 ## Improvement Strategy
 
-The improved model introduces four changes:
+The improved model introduces the following changes:
 
 1. **AdamW + weight decay**  
    Reduces overfitting by regularizing model weights.
@@ -248,7 +322,10 @@ The improved model introduces four changes:
    Stops training when validation performance no longer improves.
 
 4. **Global Average Pooling + Global Max Pooling**  
-   Preserves both global trend information and local strong responses, reducing the risk that short maintenance-related signals are diluted by average pooling.
+   Preserves both global trend information and local strong responses.
+
+5. **Conservative Time-Series Data Augmentation**  
+   Improves robustness by preventing the model from relying too heavily on specific time segments, sensor channels, or exact sensor values.
 
 ---
 
@@ -270,7 +347,7 @@ Main differences:
 | Framework | TensorFlow / Colab | PyTorch / local GPU |
 | Reported result | Mean validation accuracy | Per-fold accuracy and mean ± std |
 
-The improved PyTorch baseline achieves **76.59% ± 1.43%**, which is comparable to the binary detection performance reported by the original paper. However, because the model architecture, framework, training environment, and training budget are not identical to the original implementation, this result should be understood as a reproducible PyTorch baseline and improvement, not a strict reproduction of the paper's best model.
+The augmented PyTorch baseline achieves **76.91% ± 0.90%**, which is comparable to the binary detection performance reported by the original paper. However, because the model architecture, framework, training environment, and training budget are not identical to the original implementation, this result should be understood as a reproducible PyTorch baseline and improvement, not a strict reproduction of the paper's best model.
 
 ---
 
@@ -289,7 +366,8 @@ ngafid-maintenance-binary-cv/
 ├── configs/
 │   ├── quick_test.yaml
 │   ├── binary_inception.yaml
-│   └── binary_inception_improved.yaml
+│   ├── binary_inception_improved.yaml
+│   └── binary_inception_augmented.yaml
 │
 ├── scripts/
 │   ├── download_data.py
@@ -312,10 +390,16 @@ ngafid-maintenance-binary-cv/
 ├── results_improved/
 │   └── not uploaded to GitHub
 │
+├── results_augmented/
+│   └── not uploaded to GitHub
+│
 ├── checkpoints/
 │   └── not uploaded to GitHub
 │
-└── checkpoints_improved/
+├── checkpoints_improved/
+│   └── not uploaded to GitHub
+│
+└── checkpoints_augmented/
     └── not uploaded to GitHub
 ```
 
@@ -323,7 +407,7 @@ ngafid-maintenance-binary-cv/
 
 ## Reproducibility
 
-To reproduce the current experiment:
+To reproduce the current best experiment:
 
 ```bash
 conda create -n ngafid python=3.10 -y
@@ -334,7 +418,7 @@ pip install -r requirements.txt
 python scripts/download_data.py --dataset 2days --source zenodo
 python scripts/inspect_data.py
 
-python train_cv.py --config configs/binary_inception_improved.yaml
+python train_cv.py --config configs/binary_inception_augmented.yaml
 ```
 
 For NVIDIA GPU users:
@@ -355,8 +439,10 @@ data/
 results/
 results_quick/
 results_improved/
+results_augmented/
 checkpoints/
 checkpoints_improved/
+checkpoints_augmented/
 *.pkl
 *.pt
 *.pth
