@@ -8,6 +8,14 @@ from pathlib import Path
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
+from sklearn.metrics import (
+    accuracy_score,
+    confusion_matrix,
+    f1_score,
+    precision_score,
+    recall_score,
+    roc_auc_score,
+)
 
 from src.data import NGAFIDBinaryDataset, get_fold_indices, load_ngafid_2days
 from src.models import build_model
@@ -57,6 +65,68 @@ def monitor_improved(current: float, best: float, monitor: str, min_delta: float
     if monitor in {"val_accuracy", "accuracy"}:
         return current > best + min_delta
     raise ValueError(f"Unsupported early stopping monitor: {monitor}")
+
+
+
+
+def evaluate_binary_metrics(
+    model: torch.nn.Module,
+    loader: DataLoader,
+    criterion: torch.nn.Module,
+    device: torch.device,
+    threshold: float = 0.5,
+) -> tuple[dict, np.ndarray, np.ndarray, np.ndarray]:
+    """Evaluate binary metrics for the positive class before-maintenance = 1.
+
+    Returns:
+        metrics: dict with loss, accuracy, precision, recall, f1, auroc, tn, fp, fn, tp
+        y_true: ground-truth labels as int ndarray
+        y_prob: predicted probability of positive class as float ndarray
+        y_pred: thresholded predictions as int ndarray
+    """
+    model.eval()
+    total_loss = 0.0
+    total_count = 0
+    y_true_parts = []
+    y_prob_parts = []
+
+    with torch.no_grad():
+        for x, y in loader:
+            x = x.to(device, non_blocking=True)
+            y = y.to(device, non_blocking=True)
+            logits = model(x)
+            loss = criterion(logits, y)
+            prob = torch.sigmoid(logits)
+
+            batch_size = y.shape[0]
+            total_loss += loss.item() * batch_size
+            total_count += batch_size
+            y_true_parts.append(y.detach().cpu().numpy())
+            y_prob_parts.append(prob.detach().cpu().numpy())
+
+    y_true = np.concatenate(y_true_parts).astype(int)
+    y_prob = np.concatenate(y_prob_parts).astype(float)
+    y_pred = (y_prob >= threshold).astype(int)
+
+    tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
+    try:
+        auroc = float(roc_auc_score(y_true, y_prob))
+    except ValueError:
+        auroc = float("nan")
+
+    metrics = {
+        "loss": float(total_loss / max(total_count, 1)),
+        "accuracy": float(accuracy_score(y_true, y_pred)),
+        "precision": float(precision_score(y_true, y_pred, pos_label=1, zero_division=0)),
+        "recall": float(recall_score(y_true, y_pred, pos_label=1, zero_division=0)),
+        "f1": float(f1_score(y_true, y_pred, pos_label=1, zero_division=0)),
+        "auroc": auroc,
+        "tn": int(tn),
+        "fp": int(fp),
+        "fn": int(fn),
+        "tp": int(tp),
+    }
+    return metrics, y_true, y_prob, y_pred
 
 
 def main():
@@ -224,34 +294,112 @@ def main():
             writer.writeheader()
             writer.writerows(fold_rows)
 
-        print(f"Fold {fold_id + 1} Accuracy: {best_val_acc * 100:.2f}%")
-        all_fold_results.append({"fold": fold_id, "best_epoch": best_epoch, "accuracy": best_val_acc})
+        # Reload the best checkpoint and compute detailed validation metrics.
+        best_checkpoint_path = checkpoint_dir / f"fold_{fold_id}_best.pt"
+        if best_checkpoint_path.exists():
+            checkpoint = torch.load(best_checkpoint_path, map_location=device)
+            model.load_state_dict(checkpoint["model_state_dict"])
+        else:
+            print(f"Warning: {best_checkpoint_path} not found; evaluating the current model instead.")
 
-    accuracies = np.array([r["accuracy"] for r in all_fold_results], dtype=np.float64)
-    mean_acc = float(accuracies.mean())
-    std_acc = float(accuracies.std(ddof=1)) if len(accuracies) > 1 else 0.0
+        threshold = float(train_cfg.get("threshold", 0.5))
+        fold_metrics, y_true, y_prob, y_pred = evaluate_binary_metrics(
+            model, val_loader, criterion, device, threshold=threshold
+        )
+        fold_metrics = {
+            "fold": fold_id,
+            "best_epoch": best_epoch,
+            **fold_metrics,
+        }
 
-    summary = {
-        "folds": all_fold_results,
-        "mean_accuracy": mean_acc,
-        "std_accuracy": std_acc,
-        "mean_accuracy_percent": mean_acc * 100,
-        "std_accuracy_percent": std_acc * 100,
+        predictions_path = results_dir / f"fold_{fold_id}_predictions.csv"
+        with open(predictions_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=["master_index", "y_true", "y_prob", "y_pred"])
+            writer.writeheader()
+            for idx, yt, yp, yhat in zip(val_idx, y_true, y_prob, y_pred):
+                writer.writerow({
+                    "master_index": idx,
+                    "y_true": int(yt),
+                    "y_prob": float(yp),
+                    "y_pred": int(yhat),
+                })
+
+        print(
+            f"Fold {fold_id + 1} Metrics | "
+            f"Acc={fold_metrics['accuracy'] * 100:.2f}% "
+            f"Precision={fold_metrics['precision'] * 100:.2f}% "
+            f"Recall={fold_metrics['recall'] * 100:.2f}% "
+            f"F1={fold_metrics['f1'] * 100:.2f}% "
+            f"AUROC={fold_metrics['auroc']:.4f} "
+            f"CM=[[{fold_metrics['tn']}, {fold_metrics['fp']}], "
+            f"[{fold_metrics['fn']}, {fold_metrics['tp']}]]"
+        )
+        all_fold_results.append(fold_metrics)
+
+    metric_names = ["accuracy", "precision", "recall", "f1", "auroc"]
+    summary = {"folds": all_fold_results, "metrics_mean": {}, "metrics_std": {}}
+    for name in metric_names:
+        values = np.array([r[name] for r in all_fold_results], dtype=np.float64)
+        summary["metrics_mean"][name] = float(np.nanmean(values))
+        summary["metrics_std"][name] = float(np.nanstd(values, ddof=1)) if len(values) > 1 else 0.0
+        summary[f"mean_{name}"] = summary["metrics_mean"][name]
+        summary[f"std_{name}"] = summary["metrics_std"][name]
+        summary[f"mean_{name}_percent"] = summary["metrics_mean"][name] * 100
+        summary[f"std_{name}_percent"] = summary["metrics_std"][name] * 100
+
+    aggregate_cm = {
+        "tn": int(sum(r["tn"] for r in all_fold_results)),
+        "fp": int(sum(r["fp"] for r in all_fold_results)),
+        "fn": int(sum(r["fn"] for r in all_fold_results)),
+        "tp": int(sum(r["tp"] for r in all_fold_results)),
     }
+    summary["aggregate_confusion_matrix"] = aggregate_cm
     save_json(summary, results_dir / "summary.json")
 
+    result_fields = [
+        "fold", "best_epoch", "loss", "accuracy", "precision", "recall", "f1", "auroc",
+        "tn", "fp", "fn", "tp",
+        "accuracy_percent", "precision_percent", "recall_percent", "f1_percent",
+    ]
     with open(results_dir / "cv_results.csv", "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=["fold", "best_epoch", "accuracy", "accuracy_percent"])
+        writer = csv.DictWriter(f, fieldnames=result_fields)
         writer.writeheader()
         for r in all_fold_results:
-            writer.writerow({**r, "accuracy_percent": r["accuracy"] * 100})
+            row = dict(r)
+            row["accuracy_percent"] = r["accuracy"] * 100
+            row["precision_percent"] = r["precision"] * 100
+            row["recall_percent"] = r["recall"] * 100
+            row["f1_percent"] = r["f1"] * 100
+            writer.writerow(row)
+
+    with open(results_dir / "confusion_matrix.csv", "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["", "pred_after_0", "pred_before_1"])
+        writer.writerow(["true_after_0", aggregate_cm["tn"], aggregate_cm["fp"]])
+        writer.writerow(["true_before_1", aggregate_cm["fn"], aggregate_cm["tp"]])
 
     print("\n" + "=" * 80)
     for r in all_fold_results:
-        print(f"Fold {r['fold'] + 1} Accuracy: {r['accuracy'] * 100:.2f}%")
-    print(f"Mean Accuracy: {mean_acc * 100:.2f}%")
-    print(f"Std Accuracy: {std_acc * 100:.2f}%")
-    print(f"Mean ± Std: {mean_acc * 100:.2f}% ± {std_acc * 100:.2f}%")
+        print(
+            f"Fold {r['fold'] + 1}: "
+            f"Acc={r['accuracy'] * 100:.2f}% | "
+            f"Precision={r['precision'] * 100:.2f}% | "
+            f"Recall={r['recall'] * 100:.2f}% | "
+            f"F1={r['f1'] * 100:.2f}% | "
+            f"AUROC={r['auroc']:.4f}"
+        )
+    for name in metric_names:
+        mean = summary["metrics_mean"][name]
+        std = summary["metrics_std"][name]
+        if name == "auroc":
+            print(f"Mean {name.upper()}: {mean:.4f} ± {std:.4f}")
+        else:
+            print(f"Mean {name.capitalize()}: {mean * 100:.2f}% ± {std * 100:.2f}%")
+    print(
+        "Aggregated Confusion Matrix [[TN, FP], [FN, TP]]: "
+        f"[[{aggregate_cm['tn']}, {aggregate_cm['fp']}], "
+        f"[{aggregate_cm['fn']}, {aggregate_cm['tp']}]]"
+    )
     print(f"Saved results to: {results_dir}")
 
 
