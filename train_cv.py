@@ -22,6 +22,43 @@ def parse_args():
     return parser.parse_args()
 
 
+def build_optimizer(model: torch.nn.Module, train_cfg: dict) -> torch.optim.Optimizer:
+    optimizer_name = str(train_cfg.get("optimizer", "adamw")).lower()
+    lr = float(train_cfg.get("learning_rate", 1e-4))
+    weight_decay = float(train_cfg.get("weight_decay", 0.0))
+
+    if optimizer_name == "adamw":
+        return torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+    if optimizer_name == "adam":
+        return torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+    raise ValueError(f"Unsupported optimizer: {optimizer_name}")
+
+
+def build_scheduler(optimizer: torch.optim.Optimizer, train_cfg: dict):
+    scheduler_name = train_cfg.get("scheduler", None)
+    if scheduler_name is None or str(scheduler_name).lower() in {"none", "null"}:
+        return None
+
+    scheduler_name = str(scheduler_name).lower()
+    if scheduler_name == "reduce_on_plateau":
+        return torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode="min",
+            factor=float(train_cfg.get("scheduler_factor", 0.5)),
+            patience=int(train_cfg.get("scheduler_patience", 5)),
+            min_lr=float(train_cfg.get("min_lr", 1e-6)),
+        )
+    raise ValueError(f"Unsupported scheduler: {scheduler_name}")
+
+
+def monitor_improved(current: float, best: float, monitor: str, min_delta: float) -> bool:
+    if monitor == "val_loss":
+        return current < best - min_delta
+    if monitor in {"val_accuracy", "accuracy"}:
+        return current > best + min_delta
+    raise ValueError(f"Unsupported early stopping monitor: {monitor}")
+
+
 def main():
     args = parse_args()
     cfg = load_config(args.config)
@@ -90,16 +127,18 @@ def main():
 
         model = build_model(cfg["model"]).to(device)
         criterion = torch.nn.BCEWithLogitsLoss()
-        optimizer = torch.optim.Adam(
-            model.parameters(),
-            lr=float(train_cfg.get("learning_rate", 1e-4)),
-            weight_decay=float(train_cfg.get("weight_decay", 0.0)),
-        )
+        optimizer = build_optimizer(model, train_cfg)
+        scheduler = build_scheduler(optimizer, train_cfg)
 
         best_val_acc = -math.inf
         best_epoch = 0
-        no_improve = 0
+
         patience = train_cfg.get("early_stopping_patience", None)
+        early_monitor = str(train_cfg.get("early_stopping_monitor", "val_loss")).lower()
+        min_delta = float(train_cfg.get("early_stopping_min_delta", 0.0))
+        best_monitor_score = math.inf if early_monitor == "val_loss" else -math.inf
+        no_improve = 0
+
         max_steps = train_cfg.get("max_steps_per_epoch", None)
         if max_steps is not None:
             max_steps = int(max_steps)
@@ -117,6 +156,11 @@ def main():
             )
             val_metrics = evaluate(model, val_loader, criterion, device, desc=f"fold {fold_id + 1} epoch {epoch} val")
 
+            if scheduler is not None:
+                # ReduceLROnPlateau is driven by validation loss.
+                scheduler.step(val_metrics.loss)
+
+            current_lr = optimizer.param_groups[0]["lr"]
             row = {
                 "fold": fold_id,
                 "epoch": epoch,
@@ -124,18 +168,20 @@ def main():
                 "train_accuracy": train_metrics.accuracy,
                 "val_loss": val_metrics.loss,
                 "val_accuracy": val_metrics.accuracy,
+                "learning_rate": current_lr,
             }
             fold_rows.append(row)
             print(
                 f"Fold {fold_id + 1} Epoch {epoch:03d} | "
                 f"train_loss={train_metrics.loss:.4f} train_acc={train_metrics.accuracy:.4f} | "
-                f"val_loss={val_metrics.loss:.4f} val_acc={val_metrics.accuracy:.4f}"
+                f"val_loss={val_metrics.loss:.4f} val_acc={val_metrics.accuracy:.4f} | "
+                f"lr={current_lr:.2e}"
             )
 
+            # Keep reporting the best validation accuracy for comparability with earlier runs.
             if val_metrics.accuracy > best_val_acc:
                 best_val_acc = val_metrics.accuracy
                 best_epoch = epoch
-                no_improve = 0
                 if bool(train_cfg.get("save_best", True)):
                     torch.save(
                         {
@@ -144,14 +190,24 @@ def main():
                             "fold": fold_id,
                             "epoch": epoch,
                             "val_accuracy": best_val_acc,
+                            "val_loss": val_metrics.loss,
                         },
                         checkpoint_dir / f"fold_{fold_id}_best.pt",
                     )
+
+            monitor_value = val_metrics.loss if early_monitor == "val_loss" else val_metrics.accuracy
+            if monitor_improved(monitor_value, best_monitor_score, early_monitor, min_delta):
+                best_monitor_score = monitor_value
+                no_improve = 0
             else:
                 no_improve += 1
 
             if patience is not None and no_improve >= int(patience):
-                print(f"Early stopping at epoch {epoch}; best epoch={best_epoch}")
+                print(
+                    f"Early stopping at epoch {epoch}; "
+                    f"best accuracy epoch={best_epoch}; "
+                    f"best {early_monitor}={best_monitor_score:.6f}"
+                )
                 break
 
         fold_log_path = results_dir / f"fold_{fold_id}_epochs.csv"
