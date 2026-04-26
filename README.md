@@ -135,6 +135,14 @@ Std Accuracy
 Mean ± Std
 ```
 
+To evaluate detailed metrics from saved checkpoints:
+
+```bash
+set PYTHONPATH=%CD% && python scripts/evaluate_metrics.py --config configs/binary_inception_augmented.yaml
+```
+
+This computes accuracy, precision, recall, F1-score, AUROC, and confusion matrices for each fold.
+
 ---
 
 ## Model
@@ -276,35 +284,54 @@ The augmentation includes:
 
 5-Fold Cross Validation result:
 
-| Fold | Accuracy |
-|---|---:|
-| Fold 1 | 76.72% |
-| Fold 2 | 76.28% |
-| Fold 3 | 76.32% |
-| Fold 4 | 78.46% |
-| Fold 5 | 76.76% |
+| Fold | Accuracy | Precision | Recall | F1-score | AUROC |
+|---|---:|---:|---:|---:|---:|
+| Fold 1 | 76.72% | 76.67% | 75.51% | 76.09% | 0.8404 |
+| Fold 2 | 76.28% | 76.74% | 76.67% | 76.71% | 0.8413 |
+| Fold 3 | 76.32% | 76.00% | 75.87% | 75.93% | 0.8341 |
+| Fold 4 | 78.46% | 76.54% | 79.40% | 77.94% | 0.8503 |
+| Fold 5 | 76.76% | 77.12% | 72.73% | 74.86% | 0.8389 |
 
 Final augmented result:
 
+| Metric | Mean ± Std |
+|---|---:|
+| Accuracy | 76.91% ± 0.90% |
+| Precision | 76.61% ± 0.40% |
+| Recall | 76.04% ± 2.40% |
+| F1-score | 76.31% ± 1.13% |
+| AUROC | 0.8410 ± 0.0059 |
+
+Aggregated confusion matrix across 5 folds:
+
+|  | Predicted After | Predicted Before |
+|---|---:|---:|
+| True After | 4543 | 1301 |
+| True Before | 1342 | 4260 |
+
+The positive class is `before maintenance`.
+
+The aggregated confusion matrix is represented as:
+
 ```text
-Mean Accuracy: 76.91%
-Std Accuracy: 0.90%
-Mean ± Std: 76.91% ± 0.90%
+[[TN, FP], [FN, TP]] = [[4543, 1301], [1342, 4260]]
 ```
+
+This means that the model correctly detects 4260 before-maintenance flights and misses 1342 before-maintenance flights. It also correctly identifies 4543 after-maintenance flights and misclassifies 1301 after-maintenance flights as before-maintenance.
+
+Compared with the improved model without data augmentation, conservative data augmentation slightly improves the mean accuracy from **76.59%** to **76.91%** and reduces the standard deviation from **1.43%** to **0.90%**. This suggests that the augmentation mainly improves cross-fold stability and robustness.
+
+The AUROC of **0.8410 ± 0.0059** indicates that the model has stable threshold-independent discriminative ability between before-maintenance and after-maintenance flights.
 
 ---
 
 ## Summary of Results
 
-| Version | Main Changes | Accuracy |
-|---|---|---:|
-| Baseline | InceptionTime-like CNN, Adam, AvgPool | 70.39% ± 1.67% |
-| Improved | AdamW, weight decay, scheduler, early stopping, AvgPool+MaxPool | 76.59% ± 1.43% |
-| Augmented | Improved + Time Masking + Sensor Masking + Jittering | 76.91% ± 0.90% |
-
-Compared with the improved model without augmentation, conservative data augmentation slightly improves the mean accuracy from **76.59%** to **76.91%** and reduces the standard deviation from **1.43%** to **0.90%**.
-
-This suggests that the augmentation mainly improves cross-fold stability and robustness.
+| Version | Main Changes | Accuracy | F1-score | AUROC |
+|---|---|---:|---:|---:|
+| Baseline | InceptionTime-like CNN, Adam, AvgPool | 70.39% ± 1.67% | N/A | N/A |
+| Improved | AdamW, weight decay, scheduler, early stopping, AvgPool+MaxPool | 76.59% ± 1.43% | N/A | N/A |
+| Augmented | Improved + Time Masking + Sensor Masking + Jittering | 76.91% ± 0.90% | 76.31% ± 1.13% | 0.8410 ± 0.0059 |
 
 ---
 
@@ -371,7 +398,8 @@ ngafid-maintenance-binary-cv/
 │
 ├── scripts/
 │   ├── download_data.py
-│   └── inspect_data.py
+│   ├── inspect_data.py
+│   └── evaluate_metrics.py
 │
 ├── src/
 │   ├── __init__.py
@@ -426,6 +454,12 @@ For NVIDIA GPU users:
 ```bash
 pip uninstall -y torch torchvision torchaudio
 pip install -r requirements-cu126.txt
+```
+
+To evaluate detailed metrics from saved checkpoints:
+
+```bash
+set PYTHONPATH=%CD% && python scripts/evaluate_metrics.py --config configs/binary_inception_augmented.yaml
 ```
 
 ---
