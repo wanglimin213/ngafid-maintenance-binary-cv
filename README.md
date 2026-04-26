@@ -1,6 +1,6 @@
 # NGAFID Maintenance Binary Detection
 
-This project reproduces the **binary maintenance issue detection** task on the NGAFID Aviation Maintenance Dataset.
+This project reproduces and extends the **binary maintenance issue detection** task on the NGAFID Aviation Maintenance Dataset.
 
 The task is to classify each flight as either:
 
@@ -104,10 +104,16 @@ Its accuracy is not intended to be reported as a formal result.
 
 ## Main Training
 
-Run the main 5-Fold Cross Validation experiment:
+Run the baseline 5-Fold Cross Validation experiment:
 
 ```bash
 python train_cv.py --config configs/binary_inception.yaml
+```
+
+Run the improved experiment:
+
+```bash
+python train_cv.py --config configs/binary_inception_improved.yaml
 ```
 
 The program will report:
@@ -125,37 +131,6 @@ Mean ± Std
 
 ---
 
-## Current Result
-
-Current experiment configuration:
-
-```yaml
-device: cuda
-epochs: 100
-max_steps_per_epoch: 100
-batch_size: 16
-```
-
-5-Fold Cross Validation result:
-
-| Fold | Accuracy |
-|---|---:|
-| Fold 1 | 69.74% |
-| Fold 2 | 68.63% |
-| Fold 3 | 69.46% |
-| Fold 4 | 71.30% |
-| Fold 5 | 72.83% |
-
-Final result:
-
-```text
-Mean Accuracy: 70.39%
-Std Accuracy: 1.67%
-Mean ± Std: 70.39% ± 1.67%
-```
-
----
-
 ## Model
 
 This project uses a PyTorch implementation of a lightweight **InceptionTime-like 1D-CNN** binary classifier.
@@ -166,7 +141,7 @@ The model contains:
 - residual connections
 - batch normalization
 - ReLU activation
-- global average pooling
+- global average pooling or average-max pooling
 - a final binary classification layer
 
 The model takes input with shape:
@@ -182,6 +157,98 @@ batch_size × 23 × 4096
 ```
 
 This format is required by PyTorch `Conv1d`.
+
+---
+
+## Baseline Result
+
+Baseline configuration:
+
+```yaml
+device: cuda
+epochs: 100
+max_steps_per_epoch: 100
+batch_size: 16
+optimizer: Adam
+pooling: global average pooling
+```
+
+5-Fold Cross Validation result:
+
+| Fold | Accuracy |
+|---|---:|
+| Fold 1 | 69.74% |
+| Fold 2 | 68.63% |
+| Fold 3 | 69.46% |
+| Fold 4 | 71.30% |
+| Fold 5 | 72.83% |
+
+Final baseline result:
+
+```text
+Mean Accuracy: 70.39%
+Std Accuracy: 1.67%
+Mean ± Std: 70.39% ± 1.67%
+```
+
+---
+
+## Improved Result
+
+Improved configuration:
+
+```yaml
+device: cuda
+epochs: 150
+max_steps_per_epoch: 100
+batch_size: 24
+
+optimizer: AdamW
+weight_decay: 0.0001
+
+scheduler: ReduceLROnPlateau
+early_stopping: true
+
+pooling: global average pooling + global max pooling
+```
+
+5-Fold Cross Validation result:
+
+| Fold | Accuracy |
+|---|---:|
+| Fold 1 | 76.81% |
+| Fold 2 | 76.19% |
+| Fold 3 | 74.57% |
+| Fold 4 | 76.80% |
+| Fold 5 | 78.55% |
+
+Final improved result:
+
+```text
+Mean Accuracy: 76.59%
+Std Accuracy: 1.43%
+Mean ± Std: 76.59% ± 1.43%
+```
+
+Compared with the baseline result, the improved model increases the mean accuracy from **70.39%** to **76.59%**, with a gain of **6.20 percentage points**.
+
+---
+
+## Improvement Strategy
+
+The improved model introduces four changes:
+
+1. **AdamW + weight decay**  
+   Reduces overfitting by regularizing model weights.
+
+2. **ReduceLROnPlateau**  
+   Reduces the learning rate when validation loss stops improving.
+
+3. **Early Stopping**  
+   Stops training when validation performance no longer improves.
+
+4. **Global Average Pooling + Global Max Pooling**  
+   Preserves both global trend information and local strong responses, reducing the risk that short maintenance-related signals are diluted by average pooling.
 
 ---
 
@@ -203,7 +270,7 @@ Main differences:
 | Framework | TensorFlow / Colab | PyTorch / local GPU |
 | Reported result | Mean validation accuracy | Per-fold accuracy and mean ± std |
 
-Therefore, the current result should be understood as a reproducible PyTorch baseline for the binary maintenance detection task, not a strict reproduction of the paper's best model.
+The improved PyTorch baseline achieves **76.59% ± 1.43%**, which is comparable to the binary detection performance reported by the original paper. However, because the model architecture, framework, training environment, and training budget are not identical to the original implementation, this result should be understood as a reproducible PyTorch baseline and improvement, not a strict reproduction of the paper's best model.
 
 ---
 
@@ -221,19 +288,19 @@ ngafid-maintenance-binary-cv/
 │
 ├── configs/
 │   ├── quick_test.yaml
-│   └── binary_inception.yaml
+│   ├── binary_inception.yaml
+│   └── binary_inception_improved.yaml
 │
 ├── scripts/
 │   ├── download_data.py
 │   └── inspect_data.py
 │
 ├── src/
+│   ├── __init__.py
 │   ├── data.py
-│   ├── dataset.py
 │   ├── models.py
-│   ├── train.py
-│   ├── metrics.py
 │   ├── seed.py
+│   ├── train.py
 │   └── utils.py
 │
 ├── data/
@@ -242,7 +309,13 @@ ngafid-maintenance-binary-cv/
 ├── results/
 │   └── not uploaded to GitHub
 │
-└── checkpoints/
+├── results_improved/
+│   └── not uploaded to GitHub
+│
+├── checkpoints/
+│   └── not uploaded to GitHub
+│
+└── checkpoints_improved/
     └── not uploaded to GitHub
 ```
 
@@ -261,7 +334,7 @@ pip install -r requirements.txt
 python scripts/download_data.py --dataset 2days --source zenodo
 python scripts/inspect_data.py
 
-python train_cv.py --config configs/binary_inception.yaml
+python train_cv.py --config configs/binary_inception_improved.yaml
 ```
 
 For NVIDIA GPU users:
@@ -280,7 +353,10 @@ The following files and directories are excluded from GitHub:
 ```text
 data/
 results/
+results_quick/
+results_improved/
 checkpoints/
+checkpoints_improved/
 *.pkl
 *.pt
 *.pth
