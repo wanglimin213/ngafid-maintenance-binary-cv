@@ -90,6 +90,10 @@ def main():
         print("\n" + "=" * 80)
         print(f"Fold {fold_id + 1}/{len(folds)} | train={len(train_idx)} | val={len(val_idx)}")
 
+        augmentation_cfg = data_cfg.get("augmentation", None)
+        if augmentation_cfg and bool(augmentation_cfg.get("enabled", False)):
+            print(f"Training augmentation enabled: {augmentation_cfg}")
+
         train_ds = NGAFIDBinaryDataset(
             bundle=bundle,
             indices=train_idx,
@@ -97,6 +101,8 @@ def main():
             channels=int(data_cfg.get("channels", 23)),
             label_column=label_column,
             scale_mode=data_cfg.get("scale_mode", "paper_stats"),
+            augmentation=augmentation_cfg,
+            random_seed=seed + 1000 * fold_id,
         )
         val_ds = NGAFIDBinaryDataset(
             bundle=bundle,
@@ -105,6 +111,8 @@ def main():
             channels=int(data_cfg.get("channels", 23)),
             label_column=label_column,
             scale_mode=data_cfg.get("scale_mode", "paper_stats"),
+            augmentation=None,
+            random_seed=None,
         )
 
         generator = torch.Generator()
