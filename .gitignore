@@ -1,0 +1,40 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.ipynb_checkpoints/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Data files
+data/
+*.pkl
+*.tar.gz
+*.zip
+
+# Experiment results
+results/
+results_quick/
+results_improved/
+results_augmented/
+results_weighted_bce/
+
+# Model checkpoints
+checkpoints/
+checkpoints_improved/
+checkpoints_augmented/
+checkpoints_weighted_bce/
+*.pt
+*.pth
+*.ckpt
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
