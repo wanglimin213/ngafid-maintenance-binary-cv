@@ -1,0 +1,78 @@
+# Weighted BCE experiment for NGAFID maintenance binary detection.
+# This returns to the current best AvgPool+MaxPool model and conservative augmentation,
+# changing only the loss function from standard BCE to Weighted BCE.
+
+seed: 42
+
+data:
+  data_dir: data/2days
+  max_length: 4096
+  channels: 23
+  label_column: before_after
+  fold_column: fold
+  scale_mode: paper_stats
+
+  augmentation:
+    enabled: true
+
+    # Conservative time masking: randomly hide a short temporal segment.
+    time_mask_prob: 0.30
+    time_mask_max_len: 128
+    num_time_masks: 1
+    time_mask_fill: zero
+
+    # Conservative sensor masking: randomly hide a small number of sensor channels.
+    sensor_mask_prob: 0.20
+    sensor_mask_max_channels: 2
+    sensor_mask_fill: zero
+
+    # Very small noise after MinMax scaling.
+    jitter_prob: 0.20
+    jitter_std: 0.003
+
+    # Keep scaled inputs in the normal 0-1 range after augmentation.
+    clip_after_augmentation: true
+
+model:
+  name: inception_lite
+  in_channels: 23
+  filters: 32
+  depth: 6
+  kernel_size: 41
+  bottleneck_channels: 32
+  dropout: 0.0
+
+  # Return to current best pooling head; do not use Attention Pooling here.
+  pooling: avgmax
+
+training:
+  device: cuda
+  folds: 5
+  epochs: 150
+  batch_size: 24
+  learning_rate: 0.0001
+
+  optimizer: adamw
+  weight_decay: 0.0001
+
+  # Main change for this experiment:
+  loss: weighted_bce
+  pos_weight: 1.2
+
+  scheduler: reduce_on_plateau
+  scheduler_patience: 5
+  scheduler_factor: 0.5
+  min_lr: 0.000001
+
+  early_stopping_patience: 15
+  early_stopping_monitor: val_loss
+  early_stopping_min_delta: 0.0001
+
+  max_steps_per_epoch: 100
+  num_workers: 0
+  save_best: true
+  threshold: 0.5
+
+output:
+  results_dir: results_weighted_bce
+  checkpoint_dir: checkpoints_weighted_bce
