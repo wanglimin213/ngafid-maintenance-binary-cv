@@ -122,6 +122,12 @@ Run the improved experiment with conservative data augmentation:
 python train_cv.py --config configs/binary_inception_augmented.yaml
 ```
 
+Run the Weighted BCE recall-oriented experiment:
+
+```bash
+python train_cv.py --config configs/binary_inception_weighted_bce.yaml
+```
+
 The program reports:
 
 ```text
@@ -408,17 +414,97 @@ The main reported model result remains the default-threshold 5-fold result. The 
 
 ---
 
+## Weighted BCE Experiment
+
+In addition to threshold tuning, this project also evaluates a recall-oriented training objective using **Weighted BCE**.
+
+The positive class is `before maintenance`. Since false negatives represent missed pre-maintenance flights, Weighted BCE is used to encourage the model to pay more attention to the positive class during training.
+
+Configuration:
+
+```yaml
+device: cuda
+epochs: 150
+max_steps_per_epoch: 100
+batch_size: 24
+
+optimizer: AdamW
+weight_decay: 0.0001
+
+scheduler: ReduceLROnPlateau
+early_stopping: true
+
+pooling: global average pooling + global max pooling
+
+augmentation:
+  enabled: true
+  time_masking: true
+  sensor_masking: true
+  jittering: true
+
+loss: weighted_bce
+pos_weight: 1.2
+```
+
+5-Fold Cross Validation result:
+
+| Fold | Accuracy | Precision | Recall | F1-score | AUROC |
+|---|---:|---:|---:|---:|---:|
+| Fold 1 | 75.59% | 73.50% | 78.54% | 75.94% | 0.8253 |
+| Fold 2 | 76.58% | 74.49% | 82.16% | 78.14% | 0.8402 |
+| Fold 3 | 76.63% | 74.79% | 79.24% | 76.95% | 0.8314 |
+| Fold 4 | 77.81% | 76.22% | 78.03% | 77.12% | 0.8441 |
+| Fold 5 | 77.02% | 74.33% | 78.97% | 76.58% | 0.8418 |
+
+Final Weighted BCE result:
+
+| Metric | Mean ± Std |
+|---|---:|
+| Accuracy | 76.73% ± 0.80% |
+| Precision | 74.67% ± 0.99% |
+| Recall | 79.39% ± 1.62% |
+| F1-score | 76.94% ± 0.81% |
+| AUROC | 0.8366 ± 0.0080 |
+
+Aggregated confusion matrix across 5 folds:
+
+|  | Predicted After | Predicted Before |
+|---|---:|---:|
+| True After | 4333 | 1511 |
+| True Before | 1153 | 4449 |
+
+The aggregated confusion matrix is represented as:
+
+```text
+[[TN, FP], [FN, TP]] = [[4333, 1511], [1153, 4449]]
+```
+
+Compared with the standard BCE augmented model:
+
+| Model | Accuracy | Precision | Recall | F1-score | AUROC | FN | FP |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| BCE + Augmentation | 76.91% | 76.61% | 76.04% | 76.31% | 0.8410 | 1342 | 1301 |
+| Weighted BCE | 76.73% | 74.67% | 79.39% | 76.94% | 0.8366 | 1153 | 1511 |
+
+Weighted BCE slightly decreases accuracy from **76.91%** to **76.73%**, but improves recall from **76.04%** to **79.39%** and reduces false negatives from **1342** to **1153**.
+
+This indicates that Weighted BCE is useful for recall-oriented PHM settings where missing before-maintenance flights is more costly than producing additional false alarms.
+
+---
+
 ## Summary of Results
 
-| Version | Main Changes | Accuracy | F1-score | AUROC |
-|---|---|---:|---:|---:|
-| Baseline | InceptionTime-like CNN, Adam, AvgPool | 70.39% ± 1.67% | N/A | N/A |
-| Improved | AdamW, weight decay, scheduler, early stopping, AvgPool+MaxPool | 76.59% ± 1.43% | N/A | N/A |
-| Augmented | Improved + Time Masking + Sensor Masking + Jittering | 76.91% ± 0.90% | 76.31% ± 1.13% | 0.8410 ± 0.0059 |
-| Augmented + threshold tuning | Same model, threshold adjusted to 0.41 | 75.76% | 77.50% | 0.8406 |
+| Version | Main Changes | Accuracy | Recall | F1-score | AUROC |
+|---|---|---:|---:|---:|---:|
+| Baseline | InceptionTime-like CNN, Adam, AvgPool | 70.39% ± 1.67% | N/A | N/A | N/A |
+| Improved | AdamW, weight decay, scheduler, early stopping, AvgPool+MaxPool | 76.59% ± 1.43% | N/A | N/A | N/A |
+| Augmented | Improved + Time Masking + Sensor Masking + Jittering | 76.91% ± 0.90% | 76.04% ± 2.40% | 76.31% ± 1.13% | 0.8410 ± 0.0059 |
+| Augmented + threshold tuning | Same model, threshold adjusted to 0.41 | 75.76% | 85.29% | 77.50% | 0.8406 |
+| Weighted BCE | Augmented model with `pos_weight=1.2` | 76.73% ± 0.80% | 79.39% ± 1.62% | 76.94% ± 0.81% | 0.8366 ± 0.0080 |
 
-The default threshold of 0.50 gives the highest accuracy.  
-The threshold of 0.41 gives the best F1-score and substantially improves recall for before-maintenance flights.
+The default augmented model gives the highest accuracy.  
+Threshold tuning gives the highest recall and best F1-score.  
+Weighted BCE improves recall during training while keeping the default threshold of 0.50.
 
 ---
 
@@ -443,6 +529,9 @@ The improved model introduces the following changes:
 
 6. **Threshold Tuning**  
    Provides PHM-oriented operating points that reduce false negatives for before-maintenance flights.
+
+7. **Weighted BCE**  
+   Encourages the model to pay more attention to the before-maintenance class during training and improves recall at the default threshold.
 
 ---
 
@@ -484,7 +573,8 @@ ngafid-maintenance-binary-cv/
 │   ├── quick_test.yaml
 │   ├── binary_inception.yaml
 │   ├── binary_inception_improved.yaml
-│   └── binary_inception_augmented.yaml
+│   ├── binary_inception_augmented.yaml
+│   └── binary_inception_weighted_bce.yaml
 │
 ├── scripts/
 │   ├── download_data.py
@@ -512,13 +602,19 @@ ngafid-maintenance-binary-cv/
 ├── results_augmented/
 │   └── not uploaded to GitHub
 │
+├── results_weighted_bce/
+│   └── not uploaded to GitHub
+│
 ├── checkpoints/
 │   └── not uploaded to GitHub
 │
 ├── checkpoints_improved/
 │   └── not uploaded to GitHub
 │
-└── checkpoints_augmented/
+├── checkpoints_augmented/
+│   └── not uploaded to GitHub
+│
+└── checkpoints_weighted_bce/
     └── not uploaded to GitHub
 ```
 
@@ -526,7 +622,7 @@ ngafid-maintenance-binary-cv/
 
 ## Reproducibility
 
-To reproduce the current best experiment:
+To reproduce the current best accuracy experiment:
 
 ```bash
 conda create -n ngafid python=3.10 -y
@@ -538,6 +634,12 @@ python scripts/download_data.py --dataset 2days --source zenodo
 python scripts/inspect_data.py
 
 python train_cv.py --config configs/binary_inception_augmented.yaml
+```
+
+To reproduce the Weighted BCE recall-oriented experiment:
+
+```bash
+python train_cv.py --config configs/binary_inception_weighted_bce.yaml
 ```
 
 For NVIDIA GPU users:
@@ -571,9 +673,11 @@ results/
 results_quick/
 results_improved/
 results_augmented/
+results_weighted_bce/
 checkpoints/
 checkpoints_improved/
 checkpoints_augmented/
+checkpoints_weighted_bce/
 *.pkl
 *.pt
 *.pth
