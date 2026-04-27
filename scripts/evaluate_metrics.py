@@ -3,12 +3,17 @@ from __future__ import annotations
 import argparse
 import csv
 from pathlib import Path
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from train_cv import evaluate_binary_metrics
+from train_cv import build_criterion, evaluate_binary_metrics
 from src.data import NGAFIDBinaryDataset, get_fold_indices, load_ngafid_2days
 from src.models import build_model
 from src.seed import set_seed
@@ -51,7 +56,7 @@ def main():
         seed=seed,
     )
 
-    criterion = torch.nn.BCEWithLogitsLoss()
+    criterion = build_criterion(train_cfg, device)
     all_fold_results = []
     for fold_id, (_, val_idx) in enumerate(folds):
         checkpoint_path = checkpoint_dir / f"fold_{fold_id}_best.pt"
