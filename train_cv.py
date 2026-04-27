@@ -59,6 +59,57 @@ def build_scheduler(optimizer: torch.optim.Optimizer, train_cfg: dict):
     raise ValueError(f"Unsupported scheduler: {scheduler_name}")
 
 
+
+class FocalLossWithLogits(torch.nn.Module):
+    """Binary focal loss implemented on logits."""
+
+    def __init__(self, alpha: float = 0.55, gamma: float = 2.0, reduction: str = "mean"):
+        super().__init__()
+        self.alpha = float(alpha)
+        self.gamma = float(gamma)
+        self.reduction = reduction
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        targets = targets.float()
+        bce = torch.nn.functional.binary_cross_entropy_with_logits(logits, targets, reduction="none")
+        probs = torch.sigmoid(logits)
+        p_t = probs * targets + (1.0 - probs) * (1.0 - targets)
+        alpha_t = self.alpha * targets + (1.0 - self.alpha) * (1.0 - targets)
+        loss = alpha_t * (1.0 - p_t).pow(self.gamma) * bce
+        if self.reduction == "sum":
+            return loss.sum()
+        if self.reduction == "none":
+            return loss
+        return loss.mean()
+
+
+def build_criterion(train_cfg: dict, device: torch.device) -> torch.nn.Module:
+    """Build binary classification loss.
+
+    Supported values:
+    - bce: standard BCEWithLogitsLoss
+    - weighted_bce: BCEWithLogitsLoss with positive-class pos_weight
+    - focal: binary focal loss on logits
+    """
+    loss_name = str(train_cfg.get("loss", "bce")).lower()
+
+    if loss_name == "bce":
+        return torch.nn.BCEWithLogitsLoss()
+
+    if loss_name == "weighted_bce":
+        pos_weight = float(train_cfg.get("pos_weight", 1.0))
+        return torch.nn.BCEWithLogitsLoss(
+            pos_weight=torch.tensor(pos_weight, dtype=torch.float32, device=device)
+        )
+
+    if loss_name == "focal":
+        return FocalLossWithLogits(
+            alpha=float(train_cfg.get("focal_alpha", 0.55)),
+            gamma=float(train_cfg.get("focal_gamma", 2.0)),
+        )
+
+    raise ValueError(f"Unsupported loss function: {loss_name}")
+
 def monitor_improved(current: float, best: float, monitor: str, min_delta: float) -> bool:
     if monitor == "val_loss":
         return current < best - min_delta
@@ -204,7 +255,8 @@ def main():
         )
 
         model = build_model(cfg["model"]).to(device)
-        criterion = torch.nn.BCEWithLogitsLoss()
+        criterion = build_criterion(train_cfg, device)
+        print(f"Loss function: {train_cfg.get('loss', 'bce')} | pos_weight={train_cfg.get('pos_weight', 'N/A')}")
         optimizer = build_optimizer(model, train_cfg)
         scheduler = build_scheduler(optimizer, train_cfg)
 
